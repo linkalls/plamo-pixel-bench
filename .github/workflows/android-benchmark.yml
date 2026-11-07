@@ -67,7 +67,10 @@ jobs:
           mkdir -p app/src/main/cpp/vulkan-sdk-headers
           cp -r /tmp/plamo-vulkan-headers/include/vulkan app/src/main/cpp/vulkan-sdk-headers/
           cp -r /tmp/plamo-vulkan-headers/include/vk_video app/src/main/cpp/vulkan-sdk-headers/
+          # ggml-vulkan also includes SPIR-V C++ headers; NDK does not provide these.
+          cp -r /usr/include/spirv app/src/main/cpp/vulkan-sdk-headers/
           test -s app/src/main/cpp/vulkan-sdk-headers/vulkan/vulkan.hpp
+          test -s app/src/main/cpp/vulkan-sdk-headers/spirv/unified1/spirv.hpp
 
       - name: Try experimental Mali GPU Vulkan backend
         id: vulkan_build
