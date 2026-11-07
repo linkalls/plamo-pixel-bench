@@ -50,3 +50,11 @@ Ubuntu本体にAndroid SDKを追加する必要はない。
 
 ### v0.4.1 CI修正
 Android NDKにVulkan-Hpp C++ヘッダーがないため、公式Khronos Vulkan-HeadersをCI内で取得してGPUライブラリにのみ追加。GPUビルドの成功判定と、実際にAPKへ同梱したかの確認を分けた。
+
+## v0.5.0 KleidiAI CPU + Vulkan GPUハイブリッド実験
+- 5番目のエンジンとして **Hybrid CPU Prefill + GPU Decode** を追加。
+- CPU(KleidiAI)で入力を処理し、llama_state_get_data/llama_state_set_dataでKVキャッシュをVulkanへ渡して後半の生成を行う。
+- CPU Prefill、KV転送の所要時間・バイト数、GPUコンテキスト生成、GPU Decodeを個別計測する。
+- モデル読み込みを繰り返さないよう、HybridはCPU/GPUそれぞれのモデルを保持する。メモリ消費量が増えるため実験用途限定。
+- 短文は従来のKleidiAI、長文はVulkanとHybridを比較。コンテキストに収まる限り段落分割なし。
+- **重要：KV状態のCPU→GPU互換性および実機の高速化は未確認。** GPUオフロード可否も実機ログで検証する。
