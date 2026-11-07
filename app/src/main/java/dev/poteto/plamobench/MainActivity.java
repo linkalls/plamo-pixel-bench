@@ -30,16 +30,28 @@ import java.lang.ref.WeakReference;
  * The UI continuously reports native progress and elapsed time.
  */
 public final class MainActivity extends Activity {
+    private static final boolean VULKAN_AVAILABLE;
     static {
         // All libraries are self-contained. Unique JNI names choose the intended engine.
         System.loadLibrary("plamobench_generic");
         System.loadLibrary("plamobench_dotprod");
         System.loadLibrary("plamobench_kleidi");
+        boolean gpuLibraryLoaded = false;
+        try {
+            // GPUライブラリは実験的。CIビルド失敗時もCPU版APKが起動できるようにする。
+            System.loadLibrary("plamobench_vulkan");
+            gpuLibraryLoaded = true;
+        } catch (UnsatisfiedLinkError notAvailable) {
+            android.util.Log.w("PLaMoBench", "Vulkan backend unavailable", notAvailable);
+        }
+        VULKAN_AVAILABLE = gpuLibraryLoaded;
     }
 
     private static volatile WeakReference<MainActivity> current = new WeakReference<>(null);
     private static final int PICK_MODEL = 1001;
-    private static final String[] ENGINES = {"Generic", "Dotprod", "KleidiAI"};
+    private static final String[] ENGINES = VULKAN_AVAILABLE
+            ? new String[]{"Generic", "Dotprod", "KleidiAI", "Vulkan GPU (実験)"}
+            : new String[]{"Generic", "Dotprod", "KleidiAI"};
     private static final String TEST_TEXT = "このアプリはスマートフォンのローカル翻訳モデルの速度を測定するためのものです。"
             + "正確な比較のため、すべてのテストで同じ文章、同じモデル、同じスレッド数を使用してください。";
 
@@ -124,9 +136,9 @@ public final class MainActivity extends Activity {
         content.setPadding(20, 24, 20, 24);
         content.setOrientation(LinearLayout.VERTICAL);
 
-        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.3", 18));
+        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.4", 18));
         content.addView(label("CPUエンジンを選択（1つのAPKに3種類を内蔵）", 14));
-        engine = spinner(ENGINES, 1);
+        engine = spinner(ENGINES, 2);
         content.addView(engine);
 
         choose = new Button(this);
@@ -312,6 +324,9 @@ public final class MainActivity extends Activity {
                 return nativeBenchmarkDotprod(path, input, target, threads, cap);
             case 2:
                 return nativeBenchmarkKleidi(path, input, target, threads, cap);
+            case 3:
+                if (!VULKAN_AVAILABLE) throw new IllegalStateException("Vulkan backend not installed");
+                return nativeBenchmarkVulkan(path, input, target, threads, cap);
             default:
                 throw new IllegalArgumentException("Unknown CPU backend " + backend);
         }
@@ -321,18 +336,21 @@ public final class MainActivity extends Activity {
         if (backend != 0) nativeReleaseGeneric();
         if (backend != 1) nativeReleaseDotprod();
         if (backend != 2) nativeReleaseKleidi();
+        if (VULKAN_AVAILABLE && backend != 3) nativeReleaseVulkan();
     }
 
     private static void releaseAllNativeModels() {
         nativeReleaseGeneric();
         nativeReleaseDotprod();
         nativeReleaseKleidi();
+        if (VULKAN_AVAILABLE) nativeReleaseVulkan();
     }
 
     private static void cancelNative(int backend) {
         if (backend == 0) nativeCancelGeneric();
         else if (backend == 1) nativeCancelDotprod();
         else if (backend == 2) nativeCancelKleidi();
+        else if (backend == 3 && VULKAN_AVAILABLE) nativeCancelVulkan();
     }
 
     private static native String nativeBenchmarkGeneric(
@@ -347,5 +365,9 @@ public final class MainActivity extends Activity {
     private static native void nativeReleaseGeneric();
     private static native void nativeReleaseDotprod();
     private static native void nativeReleaseKleidi();
+    private static native String nativeBenchmarkVulkan(
+            String model, String input, String target, int threads, int maxTokens);
+    private static native void nativeCancelVulkan();
+    private static native void nativeReleaseVulkan();
 }
 

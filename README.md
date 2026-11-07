@@ -41,3 +41,9 @@ Ubuntu本体にAndroid SDKを追加する必要はない。
 - 長文生成向けに安全停止を300秒へ変更。途中切れを検知するため出力上限到達フラグを結果に表示。
 
 **注意:** 現時点ではPixelのCPU（Generic/Dotprod/KleidiAI）のみ。iPhoneのMetal GPUと同等速度は実証されていない。Tensor G2のGPU/Vulkan対応は別途実機で検証する必要がある。
+
+## v0.4 Vulkan GPU実験
+- Pixel 7 ProのMali-G710向けにVulkan GPUバックエンドを試験追加。CPU/KleidiAIと実測比較するための機能。
+- Vulkanビルドに失敗した場合も従来の3 CPUエンジンを含むAPKを配布する。Vulkan選択肢はライブラリが存在する場合のみ表示する。
+- GPUオフロード99層を要求するが、実機GPUで実際にオフロードされることやMetal相当の速度を保証しない。
+- GPUシェーダーのコンパイルやNDK依存はGitHub Actions内で実行。Ubuntu本体にAndroid SDKやVulkan SDKを追加しない。

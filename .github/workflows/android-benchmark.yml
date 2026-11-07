@@ -48,12 +48,23 @@ jobs:
           chmod +x scripts/fetch-llama.sh
           ./scripts/fetch-llama.sh
 
+      - name: Install experimental Vulkan build tools (CI only)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y glslc libvulkan-dev spirv-headers
+
       - name: Build release-optimized native CPU engines
         run: |
           gradle --no-daemon --stacktrace \
             :app:assembleGenericRelease \
             :app:assembleDotprodRelease \
             :app:assembleKleidiRelease
+
+      - name: Try experimental Mali GPU Vulkan backend
+        id: vulkan_build
+        continue-on-error: true
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleVulkanRelease
 
       - name: Extract three self-contained native engines
         shell: bash
@@ -67,6 +78,19 @@ jobs:
             unzip -p "$apk" "lib/arm64-v8a/libplamobench.so" > "$libdir/libplamobench_${variant}.so"
             test -s "$libdir/libplamobench_${variant}.so"
           done
+          if [[ "${{ steps.vulkan_build.outcome }}" == "success" ]]; then
+            gpu_apk=app/build/outputs/apk/vulkan/release/app-vulkan-release.apk
+            if test -s "$gpu_apk"; then
+              unzip -p "$gpu_apk" "lib/arm64-v8a/libplamobench.so" > "$libdir/libplamobench_vulkan.so" || rm -f "$libdir/libplamobench_vulkan.so"
+            fi
+            if test -s "$libdir/libplamobench_vulkan.so"; then
+              echo "Experimental Vulkan GPU backend packaged"
+            else
+              rm -f "$libdir/libplamobench_vulkan.so"
+            fi
+          else
+            echo "Vulkan build unsuccessful: packaging all three CPU backends anyway"
+          fi
           unzip -p app/build/outputs/apk/generic/release/app-generic-release.apk \
             lib/arm64-v8a/libc++_shared.so > "$libdir/libc++_shared.so"
           for variant in generic dotprod kleidi; do
@@ -94,6 +118,9 @@ jobs:
           for lib in c++_shared plamobench_generic plamobench_dotprod plamobench_kleidi; do
             unzip -l "$apk" | grep -F "lib/arm64-v8a/lib${lib}.so"
           done
+          if [[ "${{ steps.vulkan_build.outcome }}" == "success" ]]; then
+            unzip -l "$apk" | grep -F "lib/arm64-v8a/libplamobench_vulkan.so" || echo "Vulkan library not packaged"
+          fi
           mkdir -p dist
           cp "$apk" dist/plamo-pixel-benchmark.apk
           sha256sum dist/plamo-pixel-benchmark.apk > dist/SHA256SUMS.txt

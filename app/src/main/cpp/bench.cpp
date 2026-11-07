@@ -329,7 +329,12 @@ static jstring execute_benchmark(JNIEnv *env, jclass clazz, jstring model_path,
             progress.send("モデル読み込み中：GGUFをメモリへマッピング");
             const auto load_start = Clock::now();
             llama_model_params model_params = llama_model_default_params();
+            // Vulkan版のみGPUへ全レイヤーのオフロードを要求する。
+#if defined(PLAMO_VARIANT_VULKAN)
+            model_params.n_gpu_layers = 99;
+#else
             model_params.n_gpu_layers = 0;
+#endif
             cached_model.reset(llama_model_load_from_file(path.c_str(), model_params));
             if (!cached_model) throw std::runtime_error("Could not load GGUF model");
             cached_model_path = path;
@@ -374,7 +379,12 @@ static jstring execute_benchmark(JNIEnv *env, jclass clazz, jstring model_path,
 
         std::ostringstream out;
         out << std::fixed << std::setprecision(2);
-        out << "PLaMo Pixel unified benchmark v0.3\n";
+        out << "PLaMo Pixel unified benchmark v0.4\n";
+#if defined(PLAMO_VARIANT_VULKAN)
+        out << "GPU offload: requested (verify on Pixel device)\n";
+#else
+        out << "GPU offload: disabled\n";
+#endif
         out << "Model load: " << load_ms << " ms\n";
         out << "Model cache: " << (cache_hit ? "reused" : "cold") << "\n";
         out << "Threads: " << threads << "\n";
@@ -444,6 +454,20 @@ Java_dev_poteto_plamobench_MainActivity_nativeCancelKleidi(JNIEnv *, jclass) {
 }
 extern "C" JNIEXPORT void JNICALL
 Java_dev_poteto_plamobench_MainActivity_nativeReleaseKleidi(JNIEnv *, jclass) {
+    release_cached_model();
+}
+#elif defined(PLAMO_VARIANT_VULKAN)
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_poteto_plamobench_MainActivity_nativeBenchmarkVulkan(
+    JNIEnv *env, jclass clazz, jstring path, jstring input, jstring target, jint threads, jint cap) {
+    return execute_benchmark(env, clazz, path, input, target, threads, cap);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_dev_poteto_plamobench_MainActivity_nativeCancelVulkan(JNIEnv *, jclass) {
+    cancelled.store(true, std::memory_order_relaxed);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_dev_poteto_plamobench_MainActivity_nativeReleaseVulkan(JNIEnv *, jclass) {
     release_cached_model();
 }
 #else
