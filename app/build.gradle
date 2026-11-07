@@ -15,8 +15,8 @@ android {
         applicationId 'dev.poteto.plamobench'
         minSdk 29
         targetSdk 35
-        versionCode 5
-        versionName '0.4.1'
+        versionCode 6
+        versionName '0.5.0'
         ndk {
             abiFilters 'arm64-v8a'
         }
@@ -85,6 +85,22 @@ android {
                         arguments '-DGGML_CPU_ARM_ARCH=armv8-a',
                                 '-DGGML_CPU_KLEIDIAI=OFF',
                                 '-DPLAMO_VARIANT=vulkan',
+                                '-DGGML_VULKAN=ON',
+                                '-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH',
+                                '-DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc'
+                    }
+                }
+            }
+            hybrid {
+                dimension 'cpu'
+                applicationIdSuffix '.hybrid'
+                resValue 'string', 'app_name', 'PLaMo Hybrid Benchmark Build'
+                buildConfigField 'String', 'CPU_VARIANT', '"hybrid"'
+                externalNativeBuild {
+                    cmake {
+                        arguments '-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod',
+                                '-DGGML_CPU_KLEIDIAI=ON',
+                                '-DPLAMO_VARIANT=hybrid',
                                 '-DGGML_VULKAN=ON',
                                 '-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH',
                                 '-DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc'
