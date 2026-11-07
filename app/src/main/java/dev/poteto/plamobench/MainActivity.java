@@ -31,6 +31,7 @@ import java.lang.ref.WeakReference;
  */
 public final class MainActivity extends Activity {
     private static final boolean VULKAN_AVAILABLE;
+    private static final boolean HYBRID_AVAILABLE;
     static {
         // All libraries are self-contained. Unique JNI names choose the intended engine.
         System.loadLibrary("plamobench_generic");
@@ -45,13 +46,26 @@ public final class MainActivity extends Activity {
             android.util.Log.w("PLaMoBench", "Vulkan backend unavailable", notAvailable);
         }
         VULKAN_AVAILABLE = gpuLibraryLoaded;
+        boolean hybridLoaded = false;
+        if (gpuLibraryLoaded) {
+            try {
+                System.loadLibrary("plamobench_hybrid");
+                hybridLoaded = true;
+            } catch (UnsatisfiedLinkError error) {
+                android.util.Log.w("PLaMoBench", "Hybrid engine unavailable", error);
+            }
+        }
+        HYBRID_AVAILABLE = hybridLoaded;
     }
 
     private static volatile WeakReference<MainActivity> current = new WeakReference<>(null);
     private static final int PICK_MODEL = 1001;
-    private static final String[] ENGINES = VULKAN_AVAILABLE
-            ? new String[]{"Generic", "Dotprod", "KleidiAI", "Vulkan GPU (実験)"}
-            : new String[]{"Generic", "Dotprod", "KleidiAI"};
+    private static final String[] ENGINES = HYBRID_AVAILABLE
+            ? new String[]{"Generic", "Dotprod", "KleidiAI", "Vulkan GPU (実験)",
+                "Hybrid CPU Prefill + GPU Decode (実験)"}
+            : VULKAN_AVAILABLE
+                ? new String[]{"Generic", "Dotprod", "KleidiAI", "Vulkan GPU (実験)"}
+                : new String[]{"Generic", "Dotprod", "KleidiAI"};
     private static final String TEST_TEXT = "このアプリはスマートフォンのローカル翻訳モデルの速度を測定するためのものです。"
             + "正確な比較のため、すべてのテストで同じ文章、同じモデル、同じスレッド数を使用してください。";
 
@@ -136,8 +150,8 @@ public final class MainActivity extends Activity {
         content.setPadding(20, 24, 20, 24);
         content.setOrientation(LinearLayout.VERTICAL);
 
-        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.4.1", 18));
-        content.addView(label("推論エンジンを選択（CPU 3種類＋Vulkan実験版）", 14));
+        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.5.0", 18));
+        content.addView(label("推論エンジンを選択（CPU 3＋GPU＋Hybrid、合計5方式）", 14));
         engine = spinner(ENGINES, 2);
         content.addView(engine);
 
@@ -327,6 +341,9 @@ public final class MainActivity extends Activity {
             case 3:
                 if (!VULKAN_AVAILABLE) throw new IllegalStateException("Vulkan backend not installed");
                 return nativeBenchmarkVulkan(path, input, target, threads, cap);
+            case 4:
+                if (!HYBRID_AVAILABLE) throw new IllegalStateException("Hybrid backend not installed");
+                return nativeBenchmarkHybrid(path, input, target, threads, cap);
             default:
                 throw new IllegalArgumentException("Unknown CPU backend " + backend);
         }
@@ -337,6 +354,7 @@ public final class MainActivity extends Activity {
         if (backend != 1) nativeReleaseDotprod();
         if (backend != 2) nativeReleaseKleidi();
         if (VULKAN_AVAILABLE && backend != 3) nativeReleaseVulkan();
+        if (HYBRID_AVAILABLE && backend != 4) nativeReleaseHybrid();
     }
 
     private static void releaseAllNativeModels() {
@@ -344,6 +362,7 @@ public final class MainActivity extends Activity {
         nativeReleaseDotprod();
         nativeReleaseKleidi();
         if (VULKAN_AVAILABLE) nativeReleaseVulkan();
+        if (HYBRID_AVAILABLE) nativeReleaseHybrid();
     }
 
     private static void cancelNative(int backend) {
@@ -351,6 +370,7 @@ public final class MainActivity extends Activity {
         else if (backend == 1) nativeCancelDotprod();
         else if (backend == 2) nativeCancelKleidi();
         else if (backend == 3 && VULKAN_AVAILABLE) nativeCancelVulkan();
+        else if (backend == 4 && HYBRID_AVAILABLE) nativeCancelHybrid();
     }
 
     private static native String nativeBenchmarkGeneric(
@@ -369,5 +389,9 @@ public final class MainActivity extends Activity {
             String model, String input, String target, int threads, int maxTokens);
     private static native void nativeCancelVulkan();
     private static native void nativeReleaseVulkan();
+    private static native String nativeBenchmarkHybrid(
+            String model, String input, String target, int threads, int maxTokens);
+    private static native void nativeCancelHybrid();
+    private static native void nativeReleaseHybrid();
 }
 
