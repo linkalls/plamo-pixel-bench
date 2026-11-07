@@ -136,8 +136,8 @@ public final class MainActivity extends Activity {
         content.setPadding(20, 24, 20, 24);
         content.setOrientation(LinearLayout.VERTICAL);
 
-        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.4", 18));
-        content.addView(label("CPUエンジンを選択（1つのAPKに3種類を内蔵）", 14));
+        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.4.1", 18));
+        content.addView(label("推論エンジンを選択（CPU 3種類＋Vulkan実験版）", 14));
         engine = spinner(ENGINES, 2);
         content.addView(engine);
 

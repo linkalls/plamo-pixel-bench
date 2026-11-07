@@ -379,7 +379,7 @@ static jstring execute_benchmark(JNIEnv *env, jclass clazz, jstring model_path,
 
         std::ostringstream out;
         out << std::fixed << std::setprecision(2);
-        out << "PLaMo Pixel unified benchmark v0.4\n";
+        out << "PLaMo Pixel unified benchmark v0.4.1\n";
 #if defined(PLAMO_VARIANT_VULKAN)
         out << "GPU offload: requested (verify on Pixel device)\n";
 #else

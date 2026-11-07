@@ -22,6 +22,16 @@ set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${UPSTREAM_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/upstream" EXCLUDE_FROM_ALL)
+
+if(PLAMO_VARIANT STREQUAL "vulkan")
+    # Android NDK has the Vulkan C API, but does not bundle vulkan.hpp (Vulkan-Hpp).
+    # CI fetches official Khronos Vulkan-Headers, and only this backend uses them.
+    set(VULKAN_HPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-sdk-headers")
+    if(NOT EXISTS "${VULKAN_HPP_DIR}/vulkan/vulkan.hpp")
+        message(FATAL_ERROR "Missing Vulkan-Hpp: fetch Vulkan-Headers before building GPU flavor")
+    endif()
+    target_include_directories(ggml-vulkan SYSTEM PRIVATE "${VULKAN_HPP_DIR}")
+endif()
 add_library(plamobench SHARED bench.cpp)
 target_include_directories(plamobench PRIVATE "${UPSTREAM_DIR}/include")
 target_link_libraries(plamobench PRIVATE llama log android)

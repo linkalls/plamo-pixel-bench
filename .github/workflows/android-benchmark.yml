@@ -60,6 +60,15 @@ jobs:
             :app:assembleDotprodRelease \
             :app:assembleKleidiRelease
 
+      - name: Prepare official Khronos Vulkan-Hpp headers (CI only)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/plamo-vulkan-headers
+          mkdir -p app/src/main/cpp/vulkan-sdk-headers
+          cp -r /tmp/plamo-vulkan-headers/include/vulkan app/src/main/cpp/vulkan-sdk-headers/
+          cp -r /tmp/plamo-vulkan-headers/include/vk_video app/src/main/cpp/vulkan-sdk-headers/
+          test -s app/src/main/cpp/vulkan-sdk-headers/vulkan/vulkan.hpp
+
       - name: Try experimental Mali GPU Vulkan backend
         id: vulkan_build
         continue-on-error: true
@@ -104,6 +113,11 @@ jobs:
               -D "$libdir/libplamobench_${variant}.so" | grep -F "$expected"
             echo "Packed $variant, $(stat -c%s "$libdir/libplamobench_${variant}.so") bytes"
           done
+
+      - name: Verify Vulkan library was extracted when its build succeeded
+        if: steps.vulkan_build.outcome == 'success'
+        run: |
+          test -s app/src/main/jniLibs/arm64-v8a/libplamobench_vulkan.so
 
       - name: Build ONE APK containing every engine and the progress UI
         run: |

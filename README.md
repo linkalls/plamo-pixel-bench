@@ -47,3 +47,6 @@ Ubuntu本体にAndroid SDKを追加する必要はない。
 - Vulkanビルドに失敗した場合も従来の3 CPUエンジンを含むAPKを配布する。Vulkan選択肢はライブラリが存在する場合のみ表示する。
 - GPUオフロード99層を要求するが、実機GPUで実際にオフロードされることやMetal相当の速度を保証しない。
 - GPUシェーダーのコンパイルやNDK依存はGitHub Actions内で実行。Ubuntu本体にAndroid SDKやVulkan SDKを追加しない。
+
+### v0.4.1 CI修正
+Android NDKにVulkan-Hpp C++ヘッダーがないため、公式Khronos Vulkan-HeadersをCI内で取得してGPUライブラリにのみ追加。GPUビルドの成功判定と、実際にAPKへ同梱したかの確認を分けた。
