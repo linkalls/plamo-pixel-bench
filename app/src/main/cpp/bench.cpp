@@ -470,6 +470,8 @@ extern "C" JNIEXPORT void JNICALL
 Java_dev_poteto_plamobench_MainActivity_nativeReleaseVulkan(JNIEnv *, jclass) {
     release_cached_model();
 }
+#elif defined(PLAMO_VARIANT_HYBRID)
+#include "hybrid_impl.inc"
 #else
 #error "A distinct PLAMO_VARIANT must be selected for each backend library"
 #endif
