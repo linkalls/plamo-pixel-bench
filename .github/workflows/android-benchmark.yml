@@ -91,7 +91,7 @@ jobs:
           set -euo pipefail
           apk=app/build/outputs/apk/unified/release/app-unified-release.apk
           test -s "$apk"
-          for lib in libc++_shared plamobench_generic plamobench_dotprod plamobench_kleidi; do
+          for lib in c++_shared plamobench_generic plamobench_dotprod plamobench_kleidi; do
             unzip -l "$apk" | grep -F "lib/arm64-v8a/lib${lib}.so"
           done
           mkdir -p dist
