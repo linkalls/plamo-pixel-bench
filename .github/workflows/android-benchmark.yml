@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Package all three CPU backends into ONE APK
+    name: Package CPU, GPU and Hybrid backends into ONE APK
     runs-on: ubuntu-24.04
     timeout-minutes: 80
     steps:
@@ -78,7 +78,13 @@ jobs:
         run: |
           gradle --no-daemon --stacktrace :app:assembleVulkanRelease
 
-      - name: Extract three self-contained native engines
+      - name: Build experimental CPU Prefill to GPU Decode hybrid
+        id: hybrid_build
+        continue-on-error: true
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleHybridRelease
+
+      - name: Extract independently built native engines
         shell: bash
         run: |
           set -euo pipefail
@@ -103,6 +109,15 @@ jobs:
           else
             echo "Vulkan build unsuccessful: packaging all three CPU backends anyway"
           fi
+          if [[ "${{ steps.hybrid_build.outcome }}" == "success" ]]; then
+            hybrid_apk=app/build/outputs/apk/hybrid/release/app-hybrid-release.apk
+            test -s "$hybrid_apk"
+            unzip -p "$hybrid_apk" "lib/arm64-v8a/libplamobench.so" > "$libdir/libplamobench_hybrid.so"
+            test -s "$libdir/libplamobench_hybrid.so"
+            echo "Hybrid CPU + GPU backend packaged"
+          else
+            echo "Hybrid build unsuccessful: continuing with CPU and Vulkan"
+          fi
           unzip -p app/build/outputs/apk/generic/release/app-generic-release.apk \
             lib/arm64-v8a/libc++_shared.so > "$libdir/libc++_shared.so"
           for variant in generic dotprod kleidi; do
@@ -122,6 +137,14 @@ jobs:
         run: |
           test -s app/src/main/jniLibs/arm64-v8a/libplamobench_vulkan.so
 
+      - name: Verify optional Hybrid JNI library
+        if: steps.hybrid_build.outcome == 'success'
+        run: |
+          lib=app/src/main/jniLibs/arm64-v8a/libplamobench_hybrid.so
+          test -s "$lib"
+          "$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D "$lib" |
+            grep -F Java_dev_poteto_plamobench_MainActivity_nativeBenchmarkHybrid
+
       - name: Build ONE APK containing every engine and the progress UI
         run: |
           gradle --no-daemon --stacktrace -PpackageUnified=true :app:assembleUnifiedRelease
@@ -137,6 +160,9 @@ jobs:
           done
           if [[ "${{ steps.vulkan_build.outcome }}" == "success" ]]; then
             unzip -l "$apk" | grep -F "lib/arm64-v8a/libplamobench_vulkan.so" || echo "Vulkan library not packaged"
+          fi
+          if [[ "${{ steps.hybrid_build.outcome }}" == "success" ]]; then
+            unzip -l "$apk" | grep -F "lib/arm64-v8a/libplamobench_hybrid.so"
           fi
           mkdir -p dist
           cp "$apk" dist/plamo-pixel-benchmark.apk
