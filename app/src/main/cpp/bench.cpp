@@ -59,7 +59,7 @@ struct Progress {
             : env(e), clazz(c),
               method(e->GetStaticMethodID(c, "onNativeProgress",
                                           "(Ljava/lang/String;)V")),
-              begin(Clock::now()), deadline(begin + std::chrono::seconds(90)) {
+              begin(Clock::now()), deadline(begin + std::chrono::seconds(300)) {
         if (!method) throw std::runtime_error("Missing Java progress callback");
     }
 
@@ -81,7 +81,7 @@ struct Progress {
     void check() {
         if (expired()) {
             throw std::runtime_error(stopped_by_timeout
-                ? "90秒の制限に達したので停止した" : "ユーザーが中断した");
+                ? "300秒の制限に達したので停止した" : "ユーザーが中断した");
         }
     }
 };
@@ -105,9 +105,102 @@ static std::vector<llama_token> tokenize(const llama_vocab *vocab,
     return result;
 }
 
+// Pixel 7 ProのRAMを節約するため、どの時点でも1種類のCPUモデルだけを維持する。
+// Java側はエンジン切替時に他方式のキャッシュを解放する。
+static std::mutex model_mutex;
+static std::unique_ptr<llama_model, ModelDeleter> cached_model;
+static std::string cached_model_path;
+
+// モデルは32Kトークンまで学習済みだが、このCPUベンチではメモリ消費を抑える。
+// 入力＋出力上限が収まるなら、段落が複数あっても分割しない。
+static constexpr int kContextLimit = 4096;
+static constexpr int kContextMargin = 32;
+
+static std::string make_prompt(const std::string &input, const std::string &target) {
+    // PFN公式が示すPFML3翻訳プロンプト。入力言語はモデルに自動判定させる。
+    return "<|plamo:tag|>dataset<|plamo:msg|>translation"
+           "<|plamo:tag|>input<|plamo:msg|>" + input +
+           "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>" +
+           target + "<|plamo:msg|>";
+}
+
+static size_t utf8_boundary(const std::string &text, size_t index) {
+    index = std::min(index, text.size());
+    // 日本語のUTF-8継続バイトの途中で分割しない。
+    while (index > 0 && index < text.size()
+           && (static_cast<unsigned char>(text[index]) & 0xc0) == 0x80) {
+        --index;
+    }
+    return index;
+}
+
+static std::vector<std::string> split_only_if_needed(
+        const llama_vocab *vocab, const std::string &input,
+        const std::string &target, int output_cap, Progress &progress) {
+    const size_t input_budget = static_cast<size_t>(
+        kContextLimit - output_cap - kContextMargin);
+    if (input_budget < 128) throw std::runtime_error("Output cap leaves insufficient context");
+    auto fits = [&](const std::string &candidate) {
+        return tokenize(vocab, make_prompt(candidate, target)).size() <= input_budget;
+    };
+
+    // まず全文で収まるかを判定。大多数の短文・通常の長文はここで終了。
+    if (fits(input)) return {input};
+
+    progress.send("コンテキスト上限を超過：文・段落の境界で分割中");
+    std::vector<std::string> pieces;
+    std::string rest = input;
+    while (!rest.empty()) {
+        progress.check();
+        if (fits(rest)) {
+            pieces.push_back(rest);
+            break;
+        }
+
+        // トークン数による二分探索。文字数で恣意的に段落分割しない。
+        size_t low = 1, high = rest.size(), best = 0;
+        while (low <= high) {
+            const size_t middle = low + (high - low) / 2;
+            const size_t boundary = utf8_boundary(rest, middle);
+            if (boundary > 0 && fits(rest.substr(0, boundary))) {
+                best = boundary;
+                low = middle + 1;
+            } else {
+                if (middle == 0) break;
+                high = middle - 1;
+            }
+        }
+        if (best == 0) throw std::runtime_error("Could not split input within context");
+
+        size_t cut = best;
+        const size_t earliest = (best * 2) / 3;
+        // 余裕があるときは段落→改行→句点→空白の順で自然な境界を探す。
+        const auto try_delimiter = [&](const std::string &delimiter) {
+            const size_t found = rest.rfind(delimiter, best - 1);
+            if (found == std::string::npos) return false;
+            const size_t after = found + delimiter.size();
+            if (after < earliest || after > best) return false;
+            cut = after;
+            return true;
+        };
+        if (!try_delimiter("\n\n") && !try_delimiter("\n")
+                && !try_delimiter("。") && !try_delimiter(". ")
+                && !try_delimiter(" ")) {
+            cut = best;
+        }
+        pieces.push_back(rest.substr(0, cut));
+        rest.erase(0, cut);
+        if (pieces.size() >= 256)
+            throw std::runtime_error("Input exceeds maximum segment count");
+    }
+    return pieces;
+}
+
 struct Run {
     int prompt_tokens = 0;
     int output_tokens = 0;
+    int decode_steps = 0;
+    bool reached_cap = false;
     double prefill_ms = 0;
     double decode_ms = 0;
     double sample_ms = 0;
@@ -117,17 +210,19 @@ struct Run {
 static Run run_one(llama_model *model, const std::vector<llama_token> &tokens,
                    int threads, int limit, const std::string &stage, Progress &progress) {
     progress.check();
+    if (tokens.size() + static_cast<size_t>(limit) + kContextMargin > kContextLimit)
+        throw std::runtime_error("Token budget exceeds maximum context");
     progress.send(stage + "：推論コンテキスト初期化");
 
     llama_context_params params = llama_context_default_params();
-    params.n_ctx = 2048;
+    // 入力が短い場合に巨大なKVキャッシュを割り当てない。
+    const int wanted = static_cast<int>(tokens.size()) + limit + kContextMargin;
+    params.n_ctx = std::min(kContextLimit, std::max(512, ((wanted + 255) / 256) * 256));
     params.n_batch = 512;
     params.n_ubatch = 512;
     params.n_threads = threads;
     params.n_threads_batch = threads;
     params.no_perf = true;
-    // Supported by pinned llama.cpp and called inside CPU compute.
-    // This also interrupts exceptionally long single-token operations.
     params.abort_callback = cpu_abort;
     params.abort_callback_data = &progress;
 
@@ -137,19 +232,22 @@ static Run run_one(llama_model *model, const std::vector<llama_token> &tokens,
     if (!sampler) throw std::runtime_error("Greedy sampler initialization failed");
     const llama_vocab *vocab = llama_model_get_vocab(model);
     if (!vocab) throw std::runtime_error("Model vocabulary unavailable");
-    if (tokens.size() > 512 || tokens.size() + static_cast<size_t>(limit) >= 2048)
-        throw std::runtime_error("Input exceeds benchmark context limit");
 
     Run result;
     result.prompt_tokens = static_cast<int>(tokens.size());
-
     progress.send(stage + "：入力 " + std::to_string(tokens.size()) + " tokens を処理中");
+
+    // 512トークンを超える入力も落とさず、実際のコンテキスト上限まで処理する。
     const auto prefill_start = Clock::now();
-    llama_batch prefill = llama_batch_get_one(
-        const_cast<llama_token *>(tokens.data()), static_cast<int32_t>(tokens.size()));
-    if (llama_decode(ctx.get(), prefill) != 0) {
+    for (size_t pos = 0; pos < tokens.size(); pos += 512) {
         progress.check();
-        throw std::runtime_error("Prefill decode failed");
+        const int count = static_cast<int>(std::min<size_t>(512, tokens.size() - pos));
+        llama_batch batch = llama_batch_get_one(
+            const_cast<llama_token *>(tokens.data() + pos), count);
+        if (llama_decode(ctx.get(), batch) != 0) {
+            progress.check();
+            throw std::runtime_error("Prefill decode failed");
+        }
     }
     result.prefill_ms = elapsed_ms(prefill_start);
     progress.check();
@@ -158,23 +256,38 @@ static Run run_one(llama_model *model, const std::vector<llama_token> &tokens,
     llama_token token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
     result.sample_ms = elapsed_ms(sample_start);
 
-    // Update after every token. JNI callback itself does not block on the UI.
     for (int i = 0; i < limit; ++i) {
         progress.check();
-        if (llama_vocab_is_eog(vocab, token)) {
-            progress.send(stage + "：EOS、" + std::to_string(result.output_tokens)
-                          + " tokensで終了");
-            break;
-        }
+        if (llama_vocab_is_eog(vocab, token)) break;
 
         char buffer[8192];
-        int len = llama_token_to_piece(vocab, token, buffer, sizeof(buffer), 0, false);
+        const int len = llama_token_to_piece(vocab, token, buffer, sizeof(buffer), 0, false);
         if (len > 0) result.translation.append(buffer, static_cast<size_t>(len));
         ++result.output_tokens;
 
-        progress.send(stage + "：生成 " + std::to_string(result.output_tokens)
-                      + "/" + std::to_string(limit) + " tokens");
-        if (i + 1 >= limit) break;
+        // PLaMo特有の次メッセージ開始タグが出た場合は訳文のみで止める。
+        for (const char *stop : {"<|plamo:tag|>", "<|plamo:bos|>"}) {
+            const size_t at = result.translation.find(stop);
+            if (at != std::string::npos) {
+                result.translation.resize(at);
+                progress.send(stage + "：翻訳終端タグを検出");
+                return result;
+            }
+        }
+
+        if (result.output_tokens == 1 || result.output_tokens % 16 == 0) {
+            std::ostringstream message;
+            message << stage << "：生成 " << result.output_tokens << "/" << limit << " tokens";
+            if (result.decode_ms > 0) {
+                message << " / " << std::fixed << std::setprecision(1)
+                        << (1000.0 * result.decode_steps / result.decode_ms) << " tok/s";
+            }
+            progress.send(message.str());
+        }
+        if (i + 1 >= limit) {
+            result.reached_cap = true;
+            break;
+        }
 
         const auto decode_start = Clock::now();
         llama_batch next = llama_batch_get_one(&token, 1);
@@ -184,6 +297,7 @@ static Run run_one(llama_model *model, const std::vector<llama_token> &tokens,
         }
         token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
         result.decode_ms += elapsed_ms(decode_start);
+        ++result.decode_steps;
     }
     return result;
 }
@@ -191,6 +305,8 @@ static Run run_one(llama_model *model, const std::vector<llama_token> &tokens,
 static jstring execute_benchmark(JNIEnv *env, jclass clazz, jstring model_path,
                                  jstring input, jstring target_language,
                                  jint thread_count, jint max_tokens) {
+    // キャッシュと推論の排他制御。キャンセル用atomicは別スレッドから更新できる。
+    std::lock_guard<std::mutex> lock(model_mutex);
     cancelled.store(false, std::memory_order_relaxed);
     try {
         Progress progress(env, clazz);
@@ -203,64 +319,89 @@ static jstring execute_benchmark(JNIEnv *env, jclass clazz, jstring model_path,
         if (path.empty() || text.empty()) throw std::runtime_error("Missing GGUF or input");
         if (target != "en" && target != "ja") throw std::runtime_error("Target must be en or ja");
         const int threads = std::max(1, std::min(8, static_cast<int>(thread_count)));
-        const int output_cap = std::max(4, std::min(128, static_cast<int>(max_tokens)));
+        const int output_cap = std::max(16, std::min(2048, static_cast<int>(max_tokens)));
 
-        progress.send("モデル読み込み中：GGUFをメモリへマッピング");
-        const auto load_start = Clock::now();
-        llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = 0;
-        std::unique_ptr<llama_model, ModelDeleter> model(
-            llama_model_load_from_file(path.c_str(), model_params));
-        if (!model) throw std::runtime_error("Could not load GGUF model");
-        const double load_ms = elapsed_ms(load_start);
+        const bool cache_hit = cached_model && cached_model_path == path;
+        double load_ms = 0;
+        if (!cache_hit) {
+            cached_model.reset();
+            cached_model_path.clear();
+            progress.send("モデル読み込み中：GGUFをメモリへマッピング");
+            const auto load_start = Clock::now();
+            llama_model_params model_params = llama_model_default_params();
+            model_params.n_gpu_layers = 0;
+            cached_model.reset(llama_model_load_from_file(path.c_str(), model_params));
+            if (!cached_model) throw std::runtime_error("Could not load GGUF model");
+            cached_model_path = path;
+            load_ms = elapsed_ms(load_start);
+        } else {
+            progress.send("モデルキャッシュ再利用：読み込みをスキップ");
+        }
         progress.check();
 
-        // PLaMo 3 Translate uses PFML3 format rather than ChatML.
-        // A fixed prompt format ensures that all backends see identical tokens.
-        const std::string prompt =
-            "<|plamo:tag|>dataset<|plamo:msg|>translation"
-            "<|plamo:tag|>input<|plamo:msg|>" + text +
-            "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>" +
-            target + "<|plamo:msg|>";
+        llama_model *model = cached_model.get();
+        const llama_vocab *vocab = llama_model_get_vocab(model);
+        if (!vocab) throw std::runtime_error("Model vocabulary unavailable");
 
-        progress.send("入力トークン化中");
-        auto tokens = tokenize(llama_model_get_vocab(model.get()), prompt);
+        progress.send("入力トークン化・コンテキスト長を確認中");
+        const auto pieces = split_only_if_needed(vocab, text, target, output_cap, progress);
         progress.check();
 
-        // A short 2-token warmup (rather than 64/128 generated tokens) prevents
-        // repeated long translations when the goal is only to benchmark speed.
-        Run warmup = run_one(model.get(), tokens, threads, 2, "ウォームアップ", progress);
-        (void) warmup;
-        progress.check();
+        // ウォームアップ用の重複翻訳は実行せず、実使用時の速度を測る。
+        Run total;
+        std::ostringstream translations;
+        for (size_t index = 0; index < pieces.size(); ++index) {
+            const std::string stage = "本計測 " + std::to_string(index + 1)
+                                    + "/" + std::to_string(pieces.size());
+            const auto tokens = tokenize(vocab, make_prompt(pieces[index], target));
+            Run measured = run_one(model, tokens, threads, output_cap, stage, progress);
+            total.prompt_tokens += measured.prompt_tokens;
+            total.output_tokens += measured.output_tokens;
+            total.decode_steps += measured.decode_steps;
+            total.prefill_ms += measured.prefill_ms;
+            total.decode_ms += measured.decode_ms;
+            total.sample_ms += measured.sample_ms;
+            total.reached_cap = total.reached_cap || measured.reached_cap;
+            if (index > 0) translations << "\n";
+            translations << measured.translation;
+            progress.check();
+        }
 
-        Run measured = run_one(model.get(), tokens, threads, output_cap,
-                               "本計測", progress);
-        const int decoding_steps = std::max(0, measured.output_tokens - 1);
-        const double prefill_rate = measured.prefill_ms > 0
-             ? measured.prompt_tokens * 1000.0 / measured.prefill_ms : 0.0;
-        const double decode_rate = measured.decode_ms > 0
-             ? decoding_steps * 1000.0 / measured.decode_ms : 0.0;
+        const double prefill_rate = total.prefill_ms > 0
+            ? total.prompt_tokens * 1000.0 / total.prefill_ms : 0.0;
+        const double decode_rate = total.decode_ms > 0
+            ? total.decode_steps * 1000.0 / total.decode_ms : 0.0;
 
         std::ostringstream out;
         out << std::fixed << std::setprecision(2);
-        out << "PLaMo Pixel unified benchmark\n";
+        out << "PLaMo Pixel unified benchmark v0.3\n";
         out << "Model load: " << load_ms << " ms\n";
+        out << "Model cache: " << (cache_hit ? "reused" : "cold") << "\n";
         out << "Threads: " << threads << "\n";
-        out << "Prompt tokens: " << measured.prompt_tokens << "\n";
-        out << "Output tokens: " << measured.output_tokens << "\n";
-        out << "Prefill: " << measured.prefill_ms << " ms / "
+        out << "Context limit: " << kContextLimit << " tokens\n";
+        out << "Segments: " << pieces.size() << " (only split on overflow)\n";
+        out << "Prompt tokens: " << total.prompt_tokens << "\n";
+        out << "Output tokens: " << total.output_tokens << "\n";
+        out << "Prefill: " << total.prefill_ms << " ms / "
             << prefill_rate << " tok/s\n";
-        out << "Decode: " << measured.decode_ms << " ms / "
+        out << "Decode: " << total.decode_ms << " ms / "
             << decode_rate << " tok/s\n";
-        out << "First sample: " << measured.sample_ms << " ms\n";
-        out << "Output cap: " << output_cap << " tokens\n";
-        out << "Translation:\n" << measured.translation << "\n";
+        out << "First sample total: " << total.sample_ms << " ms\n";
+        out << "Output cap: " << output_cap << " tokens per segment\n";
+        out << "Stopped by output cap: " << (total.reached_cap ? "YES" : "NO") << "\n";
+        out << "Translation:\n" << translations.str() << "\n";
         progress.send("完了：結果を表示中");
         return env->NewStringUTF(out.str().c_str());
     } catch (const std::exception &error) {
-        std::string msg = std::string("BENCHMARK STOPPED: ") + error.what();
+        const std::string msg = std::string("BENCHMARK STOPPED: ") + error.what();
         return env->NewStringUTF(msg.c_str());
     }
+}
+
+static void release_cached_model() {
+    std::lock_guard<std::mutex> lock(model_mutex);
+    cached_model.reset();
+    cached_model_path.clear();
 }
 
 #if defined(PLAMO_VARIANT_GENERIC)
@@ -273,6 +414,10 @@ extern "C" JNIEXPORT void JNICALL
 Java_dev_poteto_plamobench_MainActivity_nativeCancelGeneric(JNIEnv *, jclass) {
     cancelled.store(true, std::memory_order_relaxed);
 }
+extern "C" JNIEXPORT void JNICALL
+Java_dev_poteto_plamobench_MainActivity_nativeReleaseGeneric(JNIEnv *, jclass) {
+    release_cached_model();
+}
 #elif defined(PLAMO_VARIANT_DOTPROD)
 extern "C" JNIEXPORT jstring JNICALL
 Java_dev_poteto_plamobench_MainActivity_nativeBenchmarkDotprod(
@@ -283,6 +428,10 @@ extern "C" JNIEXPORT void JNICALL
 Java_dev_poteto_plamobench_MainActivity_nativeCancelDotprod(JNIEnv *, jclass) {
     cancelled.store(true, std::memory_order_relaxed);
 }
+extern "C" JNIEXPORT void JNICALL
+Java_dev_poteto_plamobench_MainActivity_nativeReleaseDotprod(JNIEnv *, jclass) {
+    release_cached_model();
+}
 #elif defined(PLAMO_VARIANT_KLEIDI)
 extern "C" JNIEXPORT jstring JNICALL
 Java_dev_poteto_plamobench_MainActivity_nativeBenchmarkKleidi(
@@ -292,6 +441,10 @@ Java_dev_poteto_plamobench_MainActivity_nativeBenchmarkKleidi(
 extern "C" JNIEXPORT void JNICALL
 Java_dev_poteto_plamobench_MainActivity_nativeCancelKleidi(JNIEnv *, jclass) {
     cancelled.store(true, std::memory_order_relaxed);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_dev_poteto_plamobench_MainActivity_nativeReleaseKleidi(JNIEnv *, jclass) {
+    release_cached_model();
 }
 #else
 #error "A distinct PLAMO_VARIANT must be selected for each backend library"

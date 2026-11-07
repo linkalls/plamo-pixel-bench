@@ -77,7 +77,7 @@ public final class MainActivity extends Activity {
             if (!working) return;
             long seconds = (SystemClock.elapsedRealtime() - startedAt) / 1000;
             progress.setText("エンジン: " + ENGINES[selectedEngine] + "\n"
-                    + "経過: " + seconds + "秒 / 安全上限90秒\n"
+                    + "経過: " + seconds + "秒 / 安全上限300秒\n"
                     + "段階: " + nativeStage + "\n"
                     + (cancelRequested ? "中断要求済み：ネイティブ処理の停止を確認中" : ""));
             handler.postDelayed(this, 500);
@@ -124,7 +124,7 @@ public final class MainActivity extends Activity {
         content.setPadding(20, 24, 20, 24);
         content.setOrientation(LinearLayout.VERTICAL);
 
-        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.2", 18));
+        content.addView(label("PLaMo 0.8B / Pixel CPU BENCHMARK v0.3", 18));
         content.addView(label("CPUエンジンを選択（1つのAPKに3種類を内蔵）", 14));
         engine = spinner(ENGINES, 1);
         content.addView(engine);
@@ -154,8 +154,8 @@ public final class MainActivity extends Activity {
         threads = spinner(new String[]{"1", "2", "4", "6", "8"}, 2);
         content.addView(threads);
 
-        content.addView(label("最大生成トークン（最初は16推奨）", 14));
-        outputCap = spinner(new String[]{"8", "16", "32", "64", "128"}, 1);
+        content.addView(label("最大生成トークン（長文は1024推奨。終了トークンで自動停止）", 14));
+        outputCap = spinner(new String[]{"16", "64", "128", "256", "512", "1024", "2048"}, 5);
         content.addView(outputCap);
 
         start = new Button(this);
@@ -218,6 +218,8 @@ public final class MainActivity extends Activity {
         results.setText("モデルをコピー中。翻訳推論はまだ開始してない。");
         choose.setEnabled(false);
         new Thread(() -> {
+            // モデルを差し替えるので、前のファイルを指すネイティブキャッシュを解放する。
+            releaseAllNativeModels();
             File temp = new File(getFilesDir(), "plamo-model-incoming.tmp");
             try (InputStream in = getContentResolver().openInputStream(uri);
                  OutputStream out = new FileOutputStream(temp)) {
@@ -274,6 +276,8 @@ public final class MainActivity extends Activity {
         new Thread(() -> {
             String data;
             try {
+                // 他方式の重みを解放し、RAMに残すモデルを1種類に制限する。
+                releaseOtherNativeModels(selectedEngine);
                 data = executeNative(selectedEngine, model.getAbsolutePath(),
                                      input, language, nThreads, cap);
             } catch (Throwable error) {
@@ -313,6 +317,18 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static void releaseOtherNativeModels(int backend) {
+        if (backend != 0) nativeReleaseGeneric();
+        if (backend != 1) nativeReleaseDotprod();
+        if (backend != 2) nativeReleaseKleidi();
+    }
+
+    private static void releaseAllNativeModels() {
+        nativeReleaseGeneric();
+        nativeReleaseDotprod();
+        nativeReleaseKleidi();
+    }
+
     private static void cancelNative(int backend) {
         if (backend == 0) nativeCancelGeneric();
         else if (backend == 1) nativeCancelDotprod();
@@ -328,5 +344,8 @@ public final class MainActivity extends Activity {
     private static native void nativeCancelGeneric();
     private static native void nativeCancelDotprod();
     private static native void nativeCancelKleidi();
+    private static native void nativeReleaseGeneric();
+    private static native void nativeReleaseDotprod();
+    private static native void nativeReleaseKleidi();
 }
 
