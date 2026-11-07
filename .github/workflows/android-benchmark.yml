@@ -1,0 +1,107 @@
+name: Pixel PLaMo unified benchmark APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/android-benchmark.yml'
+      - 'app/**'
+      - 'scripts/**'
+      - '*.gradle'
+      - 'gradle.properties'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Package all three CPU backends into ONE APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    steps:
+      - name: Checkout public benchmark repository
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Install build components (CI only)
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Fetch pinned official llama.cpp
+        run: |
+          chmod +x scripts/fetch-llama.sh
+          ./scripts/fetch-llama.sh
+
+      - name: Build release-optimized native CPU engines
+        run: |
+          gradle --no-daemon --stacktrace \
+            :app:assembleGenericRelease \
+            :app:assembleDotprodRelease \
+            :app:assembleKleidiRelease
+
+      - name: Extract three self-contained native engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          libdir=app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$libdir"
+          for variant in generic dotprod kleidi; do
+            apk="app/build/outputs/apk/${variant}/release/app-${variant}-release.apk"
+            test -s "$apk"
+            unzip -p "$apk" "lib/arm64-v8a/libplamobench.so" > "$libdir/libplamobench_${variant}.so"
+            test -s "$libdir/libplamobench_${variant}.so"
+          done
+          unzip -p app/build/outputs/apk/generic/release/app-generic-release.apk \
+            lib/arm64-v8a/libc++_shared.so > "$libdir/libc++_shared.so"
+          for variant in generic dotprod kleidi; do
+            expected="Java_dev_poteto_plamobench_MainActivity_nativeBenchmark"
+            case "$variant" in
+              generic) expected="${expected}Generic" ;;
+              dotprod) expected="${expected}Dotprod" ;;
+              kleidi) expected="${expected}Kleidi" ;;
+            esac
+            "$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
+              -D "$libdir/libplamobench_${variant}.so" | grep -F "$expected"
+            echo "Packed $variant, $(stat -c%s "$libdir/libplamobench_${variant}.so") bytes"
+          done
+
+      - name: Build ONE APK containing every engine and the progress UI
+        run: |
+          gradle --no-daemon --stacktrace -PpackageUnified=true :app:assembleUnifiedRelease
+
+      - name: Verify JNI libraries packaged in unified APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/unified/release/app-unified-release.apk
+          test -s "$apk"
+          for lib in libc++_shared plamobench_generic plamobench_dotprod plamobench_kleidi; do
+            unzip -l "$apk" | grep -F "lib/arm64-v8a/lib${lib}.so"
+          done
+          mkdir -p dist
+          cp "$apk" dist/plamo-pixel-benchmark.apk
+          sha256sum dist/plamo-pixel-benchmark.apk > dist/SHA256SUMS.txt
+
+      - name: Upload single installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: plamo-pixel-benchmark-unified
+          path: dist/
+          retention-days: 30
+

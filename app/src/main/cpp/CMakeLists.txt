@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(plamo_pixel_bench LANGUAGES C CXX)
+
+# Build one self-contained JNI library per variant; CI merges all three into one APK.
+set(UPSTREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp")
+if(NOT EXISTS "${UPSTREAM_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "Missing llama.cpp source. Run scripts/fetch-llama.sh.")
+endif()
+
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+add_subdirectory("${UPSTREAM_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/upstream" EXCLUDE_FROM_ALL)
+add_library(plamobench SHARED bench.cpp)
+target_include_directories(plamobench PRIVATE "${UPSTREAM_DIR}/include")
+target_link_libraries(plamobench PRIVATE llama log android)
+target_compile_options(plamobench PRIVATE -O3 -fvisibility=hidden)
+
+if(PLAMO_VARIANT STREQUAL "generic")
+    target_compile_definitions(plamobench PRIVATE PLAMO_VARIANT_GENERIC)
+elseif(PLAMO_VARIANT STREQUAL "dotprod")
+    target_compile_definitions(plamobench PRIVATE PLAMO_VARIANT_DOTPROD)
+elseif(PLAMO_VARIANT STREQUAL "kleidi")
+    target_compile_definitions(plamobench PRIVATE PLAMO_VARIANT_KLEIDI)
+else()
+    message(FATAL_ERROR "Unknown PLAMO_VARIANT=${PLAMO_VARIANT}")
+endif()
+

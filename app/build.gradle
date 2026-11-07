@@ -1,0 +1,129 @@
+plugins {
+    id 'com.android.application'
+}
+
+// CI builds three native libraries first, then packages them into one universal APK.
+// -PpackageUnified=true deliberately disables CMake to avoid accidental recompilation.
+def packageUnified = project.hasProperty('packageUnified')
+
+android {
+    namespace 'dev.poteto.plamobench'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'dev.poteto.plamobench'
+        minSdk 29
+        targetSdk 35
+        versionCode 2
+        versionName '0.2.0'
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        if (!packageUnified) {
+            externalNativeBuild {
+                cmake {
+                    cppFlags '-std=c++17', '-O3'
+                    arguments '-DANDROID_STL=c++_shared',
+                            '-DGGML_NATIVE=OFF',
+                            '-DGGML_OPENMP=OFF',
+                            '-DGGML_BACKEND_DL=OFF',
+                            '-DGGML_VULKAN=OFF',
+                            '-DLLAMA_CURL=OFF',
+                            '-DLLAMA_BUILD_TESTS=OFF',
+                            '-DLLAMA_BUILD_EXAMPLES=OFF',
+                            '-DLLAMA_BUILD_SERVER=OFF',
+                            '-DGGML_LLAMAFILE=OFF',
+                            '-DBUILD_SHARED_LIBS=OFF'
+                }
+            }
+        }
+    }
+
+    flavorDimensions 'cpu'
+    productFlavors {
+        if (packageUnified) {
+            unified {
+                dimension 'cpu'
+                resValue 'string', 'app_name', 'PLaMo Pixel Benchmark'
+                buildConfigField 'String', 'CPU_VARIANT', '"unified"'
+            }
+        } else {
+            generic {
+                dimension 'cpu'
+                applicationIdSuffix '.generic'
+                resValue 'string', 'app_name', 'PLaMo Bench Generic Build'
+                buildConfigField 'String', 'CPU_VARIANT', '"generic"'
+                externalNativeBuild {
+                    cmake {
+                        arguments '-DGGML_CPU_ARM_ARCH=armv8-a',
+                                '-DGGML_CPU_KLEIDIAI=OFF',
+                                '-DPLAMO_VARIANT=generic'
+                    }
+                }
+            }
+            dotprod {
+                dimension 'cpu'
+                applicationIdSuffix '.dotprod'
+                resValue 'string', 'app_name', 'PLaMo Bench Dotprod Build'
+                buildConfigField 'String', 'CPU_VARIANT', '"dotprod"'
+                externalNativeBuild {
+                    cmake {
+                        arguments '-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod',
+                                '-DGGML_CPU_KLEIDIAI=OFF',
+                                '-DPLAMO_VARIANT=dotprod'
+                    }
+                }
+            }
+            kleidi {
+                dimension 'cpu'
+                applicationIdSuffix '.kleidi'
+                resValue 'string', 'app_name', 'PLaMo Bench KleidiAI Build'
+                buildConfigField 'String', 'CPU_VARIANT', '"kleidi"'
+                externalNativeBuild {
+                    cmake {
+                        arguments '-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod',
+                                '-DGGML_CPU_KLEIDIAI=ON',
+                                '-DPLAMO_VARIANT=kleidi'
+                    }
+                }
+            }
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // These are public test builds, not a production signing key.
+            signingConfig signingConfigs.debug
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    if (!packageUnified) {
+        externalNativeBuild {
+            cmake {
+                path file('src/main/cpp/CMakeLists.txt')
+                version '3.22.1'
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+}
+

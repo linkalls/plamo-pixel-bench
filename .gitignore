@@ -1,0 +1,17 @@
+# Generated Android/Gradle state
+.gradle/
+build/
+**/build/
+**/.cxx/
+local.properties
+.idea/
+*.iml
+
+# Downloaded upstream source; GitHub Actions fetches this cleanly
+app/src/main/cpp/llama.cpp/
+
+# Never commit model weights or private keystores
+*.gguf
+*.keystore
+*.jks
+
